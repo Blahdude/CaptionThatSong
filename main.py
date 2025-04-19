@@ -6,6 +6,7 @@ import torch
 from transformers import pipeline
 from datetime import datetime
 import warnings
+from msclap import CLAP
 
 # Suppress unnecessary warnings
 warnings.filterwarnings("ignore")
@@ -14,12 +15,14 @@ class SimpleAudioAnalyzer:
     """A robust analyzer for instrumental audio files with minimal dependencies"""
     
     def __init__(self, use_gpu=True):
-        """Initialize the analyzer with GPU support if available"""
-        self.device = 0 if (torch.cuda.is_available() and use_gpu) else -1
-        print(f"Using device: {'GPU' if self.device == 0 else 'CPU'}")
-        
-        # Pre-load model
-        self._load_models()
+         self.device = 0 if (torch.cuda.is_available() and use_gpu) else -1
+         print(f"Using device: {'GPU' if self.device == 0 else 'CPU'}")
+         # Pre-load models
+         self._load_models()
+         # Load CLAP for zero-shot classification
+         print("Loading CLAP zero-shot model...")
+         self.clap_model = CLAP(version='2023', use_cuda=(self.device == 0))
+         print("CLAP model loaded successfully")
         
     def _load_models(self):
         """Load ML models for audio analysis"""
