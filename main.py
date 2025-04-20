@@ -7,13 +7,14 @@ import librosa
 import numpy as np
 import torch
 from msclap import CLAP   # core CLAP class for embeddings/similarity
+from openai import OpenAI
 warnings.filterwarnings('ignore')
 
 
 class SimpleAudioAnalyzer:
     """Analyzer with audio-classification, genre-classification, CLAP zero‑shot, and perceptual features"""
 
-    def __init__(self, use_gpu=True):
+    def __init__(self, use_gpu=True, openai_api_key=None):
         # Select device
         self.device = 0 if (torch.cuda.is_available() and use_gpu) else -1
         print(f"Using device: {'GPU' if self.device == 0 else 'CPU'}")
@@ -40,6 +41,13 @@ class SimpleAudioAnalyzer:
         self.clap_model = CLAP(version="2023", use_cuda=(self.device == 0))
         print("CLAP model loaded successfully")
 
+        # Initialize OpenAI client
+        if openai_api_key is None:
+            openai_api_key = os.getenv("OPENAI_API_KEY")
+        if not openai_api_key:
+            raise ValueError("OpenAI API key is required. Set it via the OPENAI_API_KEY environment variable or pass it to the constructor.")
+        self.openai_client = OpenAI(api_key=openai_api_key)
+
     def _load_audio_classifier(self):
         try:
             from transformers import pipeline
@@ -55,6 +63,49 @@ class SimpleAudioAnalyzer:
         except Exception as e:
             print(f"Error loading HF audio pipeline: {e}")
             self.audio_classifier = None
+
+    def describe_with_openai(self, results):
+        # 1) Filter the JSON to include only relevant sections
+        filtered_results = {
+            "insights": results.get("insights", []),
+            "genre": results.get("genre", []),
+            "key": results.get("key", {}),
+            "rhythm": results.get("rhythm", {}),
+            "clap_zero_shot": results.get("clap_zero_shot", []),
+            "basic_info": results.get("basic_info", {}),  # For duration
+            "perceptual_features": {
+                "f0_mean_hz": results.get("perceptual_features", {}).get("f0_mean_hz"),
+                "f0_median_hz": results.get("perceptual_features", {}).get("f0_median_hz"),
+            }  # Only include pitch stats
+        }
+        analysis_str = json.dumps(filtered_results, indent=2)
+    
+        # 2) Build a prompt focused on MusicGen-compatible output
+        system = (
+            "You are an expert audio analyst. "
+            "Given the below JSON of features and insights from an audio clip, "
+            "write a concise description of the sound in natural language. "
+            "Focus on genre, instrumentation, tempo, key, and overall mood or texture. "
+            "Avoid technical audio terms like spectral rolloff, MFCC, or tonnetz, and instead describe the sound in terms a music generation model can understand, such as 'bright tone,' 'warm melody,' or 'fast rhythm.' "
+            "The description should be suitable for generating a similar audio loop using a music generation model."
+        )
+        user = f"Audio analysis:\n{analysis_str}\n\nDescription:"
+    
+        # 3) Call OpenAI API to generate the description
+        response = self.openai_client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user}
+            ],
+            max_tokens=150,
+            temperature=0.7,
+            top_p=0.9
+        )
+    
+        # 4) Extract and return the description
+        description = response.choices[0].message.content.strip()
+        return description.split("Description:")[-1].strip()
 
     def analyze_file(self, audio_file):
         if not os.path.exists(audio_file):
@@ -241,6 +292,10 @@ class SimpleAudioAnalyzer:
             json.dump(results, f, indent=2)
         print(f"Analysis results saved to {out_name}")
 
+        print("\n--- Generating prose description with OpenAI ---")
+        description = self.describe_with_openai(results)
+        print(description)
+
         return results
 
     def _generate_insights(self, results):
@@ -360,9 +415,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--audio_file", required=True)
     parser.add_argument("--no_gpu", action="store_true")
+    parser.add_argument("--openai_api_key", default=None, help="OpenAI API key")
     args = parser.parse_args()
 
-    analyzer = SimpleAudioAnalyzer(use_gpu=not args.no_gpu)
+    analyzer = SimpleAudioAnalyzer(use_gpu=not args.no_gpu, openai_api_key=args.openai_api_key)
     analyzer.analyze_file(args.audio_file)
 
 
