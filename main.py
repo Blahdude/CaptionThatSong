@@ -8,11 +8,13 @@ import numpy as np
 import torch
 from msclap import CLAP   # core CLAP class for embeddings/similarity
 from openai import OpenAI
+from audiocraft.models import MusicGen  # Import MusicGen from audiocraft
+import torchaudio  # For saving the generated audio
 warnings.filterwarnings('ignore')
 
 
 class SimpleAudioAnalyzer:
-    """Analyzer with audio-classification, genre-classification, CLAP zero‑shot, and perceptual features"""
+    """Analyzer with audio-classification, genre-classification, CLAP zero‑shot, perceptual features, and MusicGen generation"""
 
     def __init__(self, use_gpu=True, openai_api_key=None):
         # Select device
@@ -48,6 +50,11 @@ class SimpleAudioAnalyzer:
             raise ValueError("OpenAI API key is required. Set it via the OPENAI_API_KEY environment variable or pass it to the constructor.")
         self.openai_client = OpenAI(api_key=openai_api_key)
 
+        # Initialize MusicGen
+        print("Loading MusicGen model...")
+        self.musicgen = MusicGen.get_pretrained('facebook/musicgen-small')  # Use the small model for faster generation
+        print("MusicGen model loaded successfully")
+
     def _load_audio_classifier(self):
         try:
             from transformers import pipeline
@@ -72,14 +79,14 @@ class SimpleAudioAnalyzer:
             "key": results.get("key", {}),
             "rhythm": results.get("rhythm", {}),
             "clap_zero_shot": results.get("clap_zero_shot", []),
-            "basic_info": results.get("basic_info", {}),  # For duration
+            "basic_info": results.get("basic_info", {}),
             "perceptual_features": {
                 "f0_mean_hz": results.get("perceptual_features", {}).get("f0_mean_hz"),
                 "f0_median_hz": results.get("perceptual_features", {}).get("f0_median_hz"),
-            }  # Only include pitch stats
+            }
         }
         analysis_str = json.dumps(filtered_results, indent=2)
-    
+
         # 2) Build a prompt focused on MusicGen-compatible output
         system = (
             "You are an expert audio analyst. "
@@ -90,7 +97,7 @@ class SimpleAudioAnalyzer:
             "The description should be suitable for generating a similar audio loop using a music generation model."
         )
         user = f"Audio analysis:\n{analysis_str}\n\nDescription:"
-    
+
         # 3) Call OpenAI API to generate the description
         response = self.openai_client.chat.completions.create(
             model="gpt-3.5-turbo",
@@ -102,10 +109,46 @@ class SimpleAudioAnalyzer:
             temperature=0.7,
             top_p=0.9
         )
-    
+
         # 4) Extract and return the description
         description = response.choices[0].message.content.strip()
         return description.split("Description:")[-1].strip()
+
+    def generate_with_musicgen(self, prompt, duration=10, output_file=None):
+        """Generate a new audio clip using MusicGen based on the given prompt."""
+        print(f"\n--- Generating audio with MusicGen using prompt: '{prompt}' ---")
+        
+        # Set generation parameters
+        self.musicgen.set_generation_params(
+            duration=duration,  # Duration of the generated clip in seconds
+            temperature=0.9,    # Controls randomness; higher = more creative
+        )
+    
+        # Generate audio
+        try:
+            # MusicGen expects a list of prompts; we pass a single prompt here
+            wav = self.musicgen.generate([prompt], progress=True)
+            
+            # The output wav is a list of tensors; take the first one (since we only generated one clip)
+            audio_tensor = wav[0]  # Shape: (channels, samples)
+            
+            # Move the tensor to CPU if it's on GPU
+            if audio_tensor.is_cuda:
+                audio_tensor = audio_tensor.cpu()
+            
+            # Determine output file name if not provided
+            if output_file is None:
+                output_file = f"generated_audio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.wav"
+            
+            # Save the audio to a WAV file
+            sample_rate = self.musicgen.sample_rate  # Typically 32kHz for MusicGen
+            torchaudio.save(output_file, audio_tensor, sample_rate)
+            print(f"Generated audio saved to {output_file}")
+            
+            return output_file
+        except Exception as e:
+            print(f"Error generating audio with MusicGen: {e}")
+            return None
 
     def analyze_file(self, audio_file):
         if not os.path.exists(audio_file):
@@ -292,9 +335,18 @@ class SimpleAudioAnalyzer:
             json.dump(results, f, indent=2)
         print(f"Analysis results saved to {out_name}")
 
+        # Step 9: Generate prose description with OpenAI
         print("\n--- Generating prose description with OpenAI ---")
         description = self.describe_with_openai(results)
         print(description)
+
+        # Step 10: Generate new audio clip with MusicGen
+        generated_audio_file = self.generate_with_musicgen(description, duration=10)  # Generate a 10-second clip
+        if generated_audio_file:
+            results["generated_audio"] = {
+                "prompt": description,
+                "file": generated_audio_file
+            }
 
         return results
 
