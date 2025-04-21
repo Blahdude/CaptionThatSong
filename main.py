@@ -10,6 +10,7 @@ from msclap import CLAP   # core CLAP class for embeddings/similarity
 from openai import OpenAI
 from audiocraft.models import MusicGen  # Import MusicGen from audiocraft
 import torchaudio  # For saving the generated audio
+import gradio as gr
 warnings.filterwarnings('ignore')
 
 
@@ -462,17 +463,55 @@ class SimpleAudioAnalyzer:
         return insights
 
 
-def main():
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--audio_file", required=True)
-    parser.add_argument("--no_gpu", action="store_true")
-    parser.add_argument("--openai_api_key", default=None, help="OpenAI API key")
-    args = parser.parse_args()
+def analyzer_init(audio_file, no_gpu):
+    # import argparse
+    # parser = argparse.ArgumentParser()
+    # parser.add_argument("--audio_file", required=True)
+    # parser.add_argument("--no_gpu", action="store_true")
+    # parser.add_argument("--openai_api_key", default=None, help="OpenAI API key")
+    # args = parser.parse_args()
 
-    analyzer = SimpleAudioAnalyzer(use_gpu=not args.no_gpu, openai_api_key=args.openai_api_key)
-    analyzer.analyze_file(args.audio_file)
+    analyzer = SimpleAudioAnalyzer(use_gpu=not no_gpu)
+    results = analyzer.analyze_file(audio_file)
+    formatted_insights = "\n".join(f"• {line}" for line in results["insights"])
+    return results["generated_audio"]["file"], results["generated_audio"]["prompt"], formatted_insights
+
+def generate_ui():
+    with gr.Blocks() as demo:
+        gr.Markdown(
+            """
+            # PAT 498 Final Project
+            Created by Oliver Camp and Charlie Tran
+
+            This is the demo for our PAT 498 Final Project, combining
+            AI audio captioning and music generation to create similar sounding music
+            to the input
+            """
+        )
+        with gr.Row():
+            with gr.Column():
+                audio_input = gr.Audio(label="Upload Audio", type="filepath")
+                no_gpu_checkbox = gr.Checkbox(label="Disable GPU", value=False)
+                # api_key_input = gr.Textbox(label="OpenAI API Key", type="password")
+                generate_btn = gr.Button("Generate")
+
+            with gr.Column():
+                audio_output = gr.Audio(label="Generated Music (wav)", type="filepath")
+                prompt_output = gr.Textbox(label="Prompt Used")
+                insights_output = gr.Textbox(label="Generated Insights")
+
+        generate_btn.click(
+            fn=analyzer_init,
+            inputs=[audio_input, no_gpu_checkbox],
+            outputs=[audio_output, prompt_output, insights_output]
+        )
+        gr.Markdown("""
+        ### More details
+        Insert more details here if need be
+        """)
+
+    demo.launch()
 
 
 if __name__ == "__main__":
-    main()
+    generate_ui()
